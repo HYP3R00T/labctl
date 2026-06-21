@@ -17,6 +17,7 @@ import (
 	"github.com/iximiuz/labctl/internal/completion"
 	ideutil "github.com/iximiuz/labctl/internal/ide"
 	"github.com/iximiuz/labctl/internal/labcli"
+	"github.com/iximiuz/labctl/internal/localssh"
 	"github.com/iximiuz/labctl/internal/portforward"
 	"github.com/iximiuz/labctl/internal/retry"
 )
@@ -184,6 +185,9 @@ func ideCompletion(cli labcli.CLI) completion.CompletionFunc {
 }
 
 func runIDE(ctx context.Context, cli labcli.CLI, opts *options) error {
+	if err := localssh.EnsureInstalled("ssh"); err != nil {
+		return err
+	}
 	if err := ideutil.EnsureInstalled(opts.ide); err != nil {
 		return err
 	}
@@ -271,16 +275,12 @@ func runIDE(ctx context.Context, cli labcli.CLI, opts *options) error {
 	}
 
 	// Workaround: SSH into the playground first - otherwise, the IDE may fail to connect.
-	warmup := exec.CommandContext(ctx, "ssh",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "IdentitiesOnly=yes",
-		"-o", "PreferredAuthentications=publickey",
-		"-i", cli.Config().SSHIdentityFile,
-		"-p", localPort,
+	warmupArgs := append(
+		localssh.BaseArgs(cli.Config().SSHIdentityFile, localPort),
 		fmt.Sprintf("%s@%s", opts.user, localHost),
 		"true",
 	)
+	warmup := exec.CommandContext(ctx, "ssh", warmupArgs...)
 	warmup.Run()
 
 	if workDir != homeDir {
@@ -311,15 +311,17 @@ func runIDE(ctx context.Context, cli labcli.CLI, opts *options) error {
 		return fmt.Errorf("couldn't open %s: %w", opts.ide, err)
 	}
 
-	cli.PrintAux("\n# If the IDE fails to connect, add the following to your ~/.ssh/config:\n")
+	cli.PrintAux("\n# If the IDE fails to connect, add the following to your %s:\n", localssh.ConfigPathHint())
 	cli.PrintAux("Host localhost 127.0.0.1 ::1\n")
 	cli.PrintAux("  IdentityFile %s\n", cli.Config().SSHIdentityFile)
-	cli.PrintAux("  AddKeysToAgent yes\n")
+	if runtime.GOOS != "windows" {
+		cli.PrintAux("  AddKeysToAgent yes\n")
+	}
 	if runtime.GOOS == "darwin" {
 		cli.PrintAux("  UseKeychain yes\n")
 	}
 	cli.PrintAux("  StrictHostKeyChecking no\n")
-	cli.PrintAux("  UserKnownHostsFile /dev/null\n")
+	cli.PrintAux("  UserKnownHostsFile %s\n", localssh.NullDevice())
 
 	cli.PrintAux("\nIDE is connected. Press Ctrl+C to stop the SSH proxy.\n")
 
@@ -388,14 +390,7 @@ func runRemoteCommandWithAgent(ctx context.Context, identityFile, user, host, po
 }
 
 func doRunRemoteCommand(ctx context.Context, identityFile, user, host, port, command string, forwardAgent bool) error {
-	args := []string{
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "IdentitiesOnly=yes",
-		"-o", "PreferredAuthentications=publickey",
-		"-i", identityFile,
-		"-p", port,
-	}
+	args := localssh.BaseArgs(identityFile, port)
 	if forwardAgent {
 		args = append(args, "-o", "ForwardAgent=yes")
 	}

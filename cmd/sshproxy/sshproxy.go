@@ -13,6 +13,7 @@ import (
 	"github.com/iximiuz/labctl/internal/completion"
 	"github.com/iximiuz/labctl/internal/ide"
 	"github.com/iximiuz/labctl/internal/labcli"
+	"github.com/iximiuz/labctl/internal/localssh"
 	"github.com/iximiuz/labctl/internal/portforward"
 )
 
@@ -158,19 +159,20 @@ func RunSSHProxy(ctx context.Context, cli labcli.CLI, opts *Options) error {
 	if ide.IsSupported(opts.IDE) {
 		cli.PrintAux("Opening the playground in the IDE...\n")
 
+		if err := localssh.EnsureInstalled("ssh"); err != nil {
+			return err
+		}
 		if err := ide.EnsureInstalled(opts.IDE); err != nil {
 			return err
 		}
 
 		// Hack: SSH into the playground first - otherwise, the IDE may fail to connect for some reason.
-		warmup := exec.Command("ssh",
-			"-o", "UserKnownHostsFile=/dev/null",
-			"-o", "StrictHostKeyChecking=no",
-			"-o", "IdentitiesOnly=yes",
-			"-o", "PreferredAuthentications=publickey",
-			"-i", cli.Config().SSHIdentityFile,
-			fmt.Sprintf("ssh://%s@%s:%s", opts.User, localHost, localPort),
+		warmupArgs := append(
+			localssh.BaseArgs(cli.Config().SSHIdentityFile, localPort),
+			fmt.Sprintf("%s@%s", opts.User, localHost),
+			"true",
 		)
+		warmup := exec.Command("ssh", warmupArgs...)
 		warmup.Run()
 
 		args := ide.LaunchArgs(opts.IDE, opts.User, localHost, localPort, ide.UserHomeDir(opts.User))
@@ -184,23 +186,25 @@ func RunSSHProxy(ctx context.Context, cli labcli.CLI, opts *Options) error {
 	if !opts.Quiet {
 		cli.PrintAux("SSH proxy is running on %s\n", localPort)
 		cli.PrintAux(
-			"\n# Connect from the terminal:\nssh -i %s ssh://%s@%s:%s\n",
-			cli.Config().SSHIdentityFile, opts.User, localHost, localPort,
+			"\n# Connect from the terminal:\nssh -i %s -p %s %s@%s\n",
+			cli.Config().SSHIdentityFile, localPort, opts.User, localHost,
 		)
 		cli.PrintAux(
 			"\n# Copy a file from/to the machine using scp:\nscp -i %s -P %s %s@%s:path/to/file .\n",
 			cli.Config().SSHIdentityFile, localPort, opts.User, localHost,
 		)
 
-		cli.PrintAux("\n# For better experience, add the following to your ~/.ssh/config:\n")
+		cli.PrintAux("\n# For better experience, add the following to your %s:\n", localssh.ConfigPathHint())
 		cli.PrintAux("Host localhost 127.0.0.1 ::1\n")
 		cli.PrintAux("  IdentityFile %s\n", cli.Config().SSHIdentityFile)
-		cli.PrintAux("  AddKeysToAgent yes\n")
+		if runtime.GOOS != "windows" {
+			cli.PrintAux("  AddKeysToAgent yes\n")
+		}
 		if runtime.GOOS == "darwin" {
 			cli.PrintAux("  UseKeychain yes\n")
 		}
 		cli.PrintAux("  StrictHostKeyChecking no\n")
-		cli.PrintAux("  UserKnownHostsFile /dev/null\n\n")
+		cli.PrintAux("  UserKnownHostsFile %s\n\n", localssh.NullDevice())
 
 		cli.PrintAux("\nPress Ctrl+C to stop\n")
 	}

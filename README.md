@@ -38,6 +38,8 @@ curl -sf https://labs.iximiuz.com/cli/install.sh | sh
 brew install labctl
 ```
 
+For Windows, download the `labctl_windows_amd64.zip` or `labctl_windows_arm64.zip` asset from the latest GitHub release, extract `labctl.exe`, and add it to your `PATH`.
+
 ## Usage
 
 ### Authentication
@@ -115,7 +117,7 @@ Alternatively, you can use `labctl ssh-proxy` to start a raw SSH proxy and conne
 labctl ssh-proxy <playground-id>
 ```
 
-After adding the suggested SSH config entries to your `~/.ssh/config`,
+After adding the suggested SSH config entries to your local SSH config file,
 you'll be able to develop right on the playground machine using the [Visual Studio Code Remote - SSH extension](https://code.visualstudio.com/docs/remote/ssh) or its JetBrains counterpart.
 Check out this [short recording on YouTube](https://youtu.be/wah_yLoYk0M) demonstrating the use case.
 
@@ -209,3 +211,4 @@ To uninstall the CLI, just remove the `~/.iximiuz/labctl` directory.
 ## License
 
 APACHE-2.0
+

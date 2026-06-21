@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/iximiuz/labctl/cmd/sshproxy"
 	"github.com/iximiuz/labctl/internal/completion"
 	"github.com/iximiuz/labctl/internal/labcli"
+	"github.com/iximiuz/labctl/internal/localssh"
 	"github.com/iximiuz/labctl/internal/portforward"
 )
 
@@ -81,6 +83,10 @@ func NewCommand(cli labcli.CLI) *cobra.Command {
 }
 
 func runKubeProxy(ctx context.Context, cli labcli.CLI, opts *options) error {
+	if err := localssh.EnsureInstalled("scp"); err != nil {
+		return err
+	}
+
 	if err := validateAddress(opts.address); err != nil {
 		return labcli.NewStatusError(1, "invalid --address %q: %s", opts.address, err)
 	}
@@ -126,14 +132,12 @@ func runKubeProxy(ctx context.Context, cli labcli.CLI, opts *options) error {
 		User:    user,
 		Quiet:   true,
 		WithProxy: func(ctx context.Context, info *sshproxy.SSHProxyInfo) error {
-			cmd := exec.CommandContext(ctx, "scp",
-				"-i", info.IdentityFile,
-				"-o", "StrictHostKeyChecking=no",
-				"-o", "UserKnownHostsFile=/dev/null",
-				"-P", info.ProxyPort,
+			args := append(
+				localssh.SCPArgs(info.IdentityFile, info.ProxyPort),
 				fmt.Sprintf("%s@%s:~/.kube/config", info.User, info.ProxyHost),
 				kubeconfigPath,
 			)
+			cmd := exec.CommandContext(ctx, "scp", args...)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("scp failed: %w\n%s", err, strings.TrimSpace(string(out)))
 			}
@@ -177,10 +181,17 @@ func runKubeProxy(ctx context.Context, cli labcli.CLI, opts *options) error {
 
 	cli.PrintOut("\nKubeconfig saved to:\n  %s\n", kubeconfigPath)
 	cli.PrintOut("\nTo access the cluster:\n\n")
-	cli.PrintOut("  export KUBECONFIG=%s\n", kubeconfigPath)
-	cli.PrintOut("  kubectl get all\n")
-	cli.PrintOut("\nOr using an explicit flag:\n\n")
-	cli.PrintOut("  kubectl --kubeconfig=%s get all\n", kubeconfigPath)
+	if runtime.GOOS == "windows" {
+		cli.PrintOut("  $env:KUBECONFIG=\"%s\"\n", kubeconfigPath)
+		cli.PrintOut("  kubectl get all\n")
+		cli.PrintOut("\nOr using an explicit flag:\n\n")
+		cli.PrintOut("  kubectl --kubeconfig=\"%s\" get all\n", kubeconfigPath)
+	} else {
+		cli.PrintOut("  export KUBECONFIG=%s\n", kubeconfigPath)
+		cli.PrintOut("  kubectl get all\n")
+		cli.PrintOut("\nOr using an explicit flag:\n\n")
+		cli.PrintOut("  kubectl --kubeconfig=%s get all\n", kubeconfigPath)
+	}
 	cli.PrintOut("\nKeeping port forwarding running. Press Ctrl+C to stop.\n\n")
 
 	select {

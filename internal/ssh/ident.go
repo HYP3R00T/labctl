@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/iximiuz/labctl/internal/localssh"
 	"github.com/mikesmitty/edkey"
 	"golang.org/x/crypto/ssh"
 )
@@ -36,6 +37,10 @@ func GenerateIdentity(identityFile string, passphrase string) error {
 	}
 
 	if passphrase != "" {
+		if err := localssh.EnsureInstalled("ssh-keygen"); err != nil {
+			return err
+		}
+
 		cmd := exec.Command("ssh-keygen",
 			"-p",
 			"-f", identityFile,

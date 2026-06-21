@@ -10,6 +10,7 @@ import (
 
 	"github.com/iximiuz/labctl/cmd/sshproxy"
 	"github.com/iximiuz/labctl/internal/labcli"
+	"github.com/iximiuz/labctl/internal/localssh"
 )
 
 const example = `  # Copy a file from local machine to playground
@@ -105,6 +106,10 @@ func NewCommand(cli labcli.CLI) *cobra.Command {
 }
 
 func runCopy(ctx context.Context, cli labcli.CLI, opts *options) error {
+	if err := localssh.EnsureInstalled("scp"); err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -114,13 +119,7 @@ func runCopy(ctx context.Context, cli labcli.CLI, opts *options) error {
 		User:    opts.user,
 		Quiet:   true,
 		WithProxy: func(ctx context.Context, info *sshproxy.SSHProxyInfo) error {
-			args := []string{
-				"-i", info.IdentityFile,
-				"-o", "StrictHostKeyChecking=no",
-				"-o", "UserKnownHostsFile=/dev/null",
-				"-P", info.ProxyPort,
-				"-C", // compress
-			}
+			args := localssh.SCPArgs(info.IdentityFile, info.ProxyPort)
 
 			if opts.recursive {
 				args = append(args, "-r")
