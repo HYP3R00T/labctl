@@ -122,7 +122,7 @@ func (c *Config) Dump() error {
 		return fmt.Errorf("unable to close config file: %s", err)
 	}
 
-	if err := os.Rename(c.FilePath+".tmp", c.FilePath); err != nil {
+	if err := replaceFile(c.FilePath+".tmp", c.FilePath); err != nil {
 		return fmt.Errorf("unable to rename config file: %s", err)
 	}
 
@@ -137,3 +137,4 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.AccessToken = accessToken
 	}
 }
+
