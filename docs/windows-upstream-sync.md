@@ -76,3 +76,23 @@ Automated Windows verification:
 - `labctl.exe` was rebuilt and its version and content-pull help commands ran
   successfully.
 - Manual Windows testing of the rebuilt executable passed.
+
+## Windows content upload paths
+
+Locally discovered content files are converted from native filesystem paths to
+slash-separated remote keys before reconciliation. Remote keys returned by the
+API are not normalized, so malformed backslash keys remain visible and are
+deleted after the canonical slash key is uploaded.
+
+Canonical remote keys are converted back with `filepath.FromSlash` only when
+opening the corresponding local file. This applies to one-time pushes and every
+watch-mode reconciliation.
+
+Automated Windows verification covers:
+
+- Root and nested local files producing only slash-separated remote keys.
+- Binary files under `__static__` and Markdown files in nested directories.
+- Uploading the canonical key while deleting an existing malformed backslash
+  key.
+- Watch mode retaining the canonical slash key after a nested file update.
+- The complete Go test suite, `go vet ./...`, and `go build ./...`.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -188,14 +189,16 @@ func RunPushOnce(ctx context.Context, cli labcli.CLI, config PushConfig) error {
 
 	if len(config.Files) > 0 {
 		for _, f := range config.Files {
-			if _, ok := state.localFiles[f]; !ok {
+			remoteFile := filepath.ToSlash(filepath.Clean(f))
+			if _, ok := state.localFiles[remoteFile]; !ok {
 				return fmt.Errorf("file %q not found in %s", f, config.Dir)
 			}
 		}
 
 		filtered := make(map[string]string, len(config.Files))
 		for _, f := range config.Files {
-			filtered[f] = state.localFiles[f]
+			remoteFile := filepath.ToSlash(filepath.Clean(f))
+			filtered[remoteFile] = state.localFiles[remoteFile]
 		}
 		state.localFiles = filtered
 
@@ -203,8 +206,9 @@ func RunPushOnce(ctx context.Context, cli labcli.CLI, config PushConfig) error {
 		// won't flag unrelated remote files for deletion.
 		filteredRemote := make(map[string]string, len(config.Files))
 		for _, f := range config.Files {
-			if digest, ok := state.remoteFiles[f]; ok {
-				filteredRemote[f] = digest
+			remoteFile := filepath.ToSlash(filepath.Clean(f))
+			if digest, ok := state.remoteFiles[remoteFile]; ok {
+				filteredRemote[remoteFile] = digest
 			}
 		}
 		state.remoteFiles = filteredRemote
@@ -304,8 +308,9 @@ func reconcileContentState(ctx context.Context, cli labcli.CLI, config PushConfi
 		}
 
 		p.Go(func(ctx context.Context) error {
-			if filepath.Ext(file) == ".md" {
-				content, err := os.ReadFile(filepath.Join(state.dir, file))
+			localFile := filepath.Join(state.dir, filepath.FromSlash(file))
+			if path.Ext(file) == ".md" {
+				content, err := os.ReadFile(localFile)
 				if err != nil {
 					// The file may have been removed since the snapshot was taken
 					// (e.g., a short-lived tmp file) - the next reconciliation
@@ -332,7 +337,7 @@ func reconcileContentState(ctx context.Context, cli labcli.CLI, config PushConfi
 					config.Kind,
 					config.Name,
 					file,
-					filepath.Join(state.dir, file),
+					localFile,
 				); err != nil {
 					if errors.Is(err, fs.ErrNotExist) {
 						cli.PrintAux("Skipping %s - the file no longer exists locally\n", file)
@@ -422,8 +427,12 @@ func listContentFilesLocal(dir string) (map[string]string, error) {
 			return nil, err
 		}
 
-		relpath := strings.TrimPrefix(strings.TrimPrefix(abspath, dir), string(filepath.Separator))
-		result[relpath] = checksum
+		relpath, err := filepath.Rel(dir, abspath)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't make content path relative to %s: %w", dir, err)
+		}
+
+		result[filepath.ToSlash(relpath)] = checksum
 	}
 
 	return result, nil

@@ -1,12 +1,22 @@
 package content
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/iximiuz/labctl/api"
+	contentpkg "github.com/iximiuz/labctl/content"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -318,6 +328,218 @@ func TestListDirsLabctlIgnore(t *testing.T) {
 	slices.Sort(expected)
 
 	assert.Equal(t, expected, relPaths)
+}
+
+func TestListContentFilesLocalUsesCanonicalRemotePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := []string{
+		"index.md",
+		filepath.Join("__static__", "asset.txt"),
+		filepath.Join("nested", "file.txt"),
+	}
+	for _, file := range files {
+		fullPath := filepath.Join(tmpDir, file)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(file), 0644))
+	}
+
+	result, err := listContentFilesLocal(tmpDir)
+	require.NoError(t, err)
+
+	got := slices.Collect(maps.Keys(result))
+	slices.Sort(got)
+	assert.Equal(t, []string{
+		"__static__/asset.txt",
+		"index.md",
+		"nested/file.txt",
+	}, got)
+	for _, file := range got {
+		assert.NotContains(t, file, `\`)
+	}
+}
+
+func TestPushReconcilesCanonicalAndMalformedRemotePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "__static__"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "nested"), 0755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "__static__", "asset.txt"),
+		[]byte("asset"),
+		0644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "nested", "file.md"),
+		[]byte("# Markdown"),
+		0644,
+	))
+
+	const malformedRemoteFile = `__static__\asset.txt`
+
+	var (
+		mu                   sync.Mutex
+		uploadedBinaryFile   string
+		uploadedMarkdownFile string
+		deletedRemoteFile    string
+		uploadedBinaryBody   string
+	)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/content/v2/files":
+			writeJSON(t, w, http.StatusOK, []api.ContentFile{{
+				Path:   malformedRemoteFile,
+				Digest: "malformed",
+			}})
+
+		case r.Method == http.MethodPut && r.URL.Path == "/content/files":
+			var body struct {
+				File string `json:"file"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode upload request: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			uploadedBinaryFile = body.File
+			mu.Unlock()
+			writeJSON(t, w, http.StatusOK, map[string]string{
+				"uploadUrl": server.URL + "/upload",
+			})
+
+		case r.Method == http.MethodPut && r.URL.Path == "/content/markdown":
+			var body struct {
+				File string `json:"file"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode markdown request: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			uploadedMarkdownFile = body.File
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+
+		case r.Method == http.MethodPut && r.URL.Path == "/upload":
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read upload body: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			uploadedBinaryBody = string(data)
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+
+		case r.Method == http.MethodDelete && r.URL.Path == "/content/files":
+			mu.Lock()
+			deletedRemoteFile = r.URL.Query().Get("file")
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cli := newContentTestCLI(server.URL)
+	err := RunPushOnce(context.Background(), cli, PushConfig{
+		Kind:  contentpkg.KindChallenge,
+		Name:  "windows-paths",
+		Dir:   tmpDir,
+		Force: true,
+	})
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "__static__/asset.txt", uploadedBinaryFile)
+	assert.Equal(t, "nested/file.md", uploadedMarkdownFile)
+	assert.Equal(t, "asset", uploadedBinaryBody)
+	assert.Equal(t, malformedRemoteFile, deletedRemoteFile)
+	assert.False(t, strings.Contains(uploadedBinaryFile, `\`))
+	assert.False(t, strings.Contains(uploadedMarkdownFile, `\`))
+}
+
+func TestPushWatchUsesCanonicalPathAfterNestedUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	localFile := filepath.Join(tmpDir, "__static__", "asset.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(localFile), 0755))
+	require.NoError(t, os.WriteFile(localFile, []byte("first"), 0644))
+
+	uploads := make(chan string, 10)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/content/v2/files":
+			writeJSON(t, w, http.StatusOK, []api.ContentFile{})
+
+		case r.Method == http.MethodPut && r.URL.Path == "/content/files":
+			var body struct {
+				File string `json:"file"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode upload request: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(t, w, http.StatusOK, map[string]string{
+				"uploadUrl": server.URL + "/upload",
+			})
+			uploads <- body.File
+
+		case r.Method == http.MethodPut && r.URL.Path == "/upload":
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunPushWatch(ctx, newContentTestCLI(server.URL), PushConfig{
+			Kind:  contentpkg.KindChallenge,
+			Name:  "windows-watch-paths",
+			Dir:   tmpDir,
+			Force: true,
+		})
+	}()
+
+	assertCanonicalUpload := func(stage string) {
+		t.Helper()
+		select {
+		case file := <-uploads:
+			assert.Equal(t, "__static__/asset.txt", file, stage)
+			assert.NotContains(t, file, `\`, stage)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for %s upload", stage)
+		}
+	}
+
+	assertCanonicalUpload("initial")
+
+	// The watcher is installed immediately after the initial reconciliation.
+	time.Sleep(250 * time.Millisecond)
+	require.NoError(t, os.WriteFile(localFile, []byte("updated"), 0644))
+	assertCanonicalUpload("watch update")
+
+	// Let the in-flight upload response complete before stopping the watcher.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out stopping content push watcher")
+	}
 }
 
 func TestListContentFilesLocalSkipsVanishedFiles(t *testing.T) {
