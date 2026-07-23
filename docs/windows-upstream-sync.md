@@ -11,7 +11,7 @@ so the known-working Windows version remains available.
 - Update target: `v0.1.100`
 - Temporary branch: `codex/update-windows-v0.1.100`
 - Merge status: Windows changes applied without conflicts
-- Test status: Pending because Go is not currently available in `PATH`
+- Test status: Automated checks completed with the Windows limitation below
 
 The temporary branch starts from the official `v0.1.100` tag. The existing
 Windows-support commit is then applied on top of it.
@@ -41,3 +41,18 @@ git -c http.sslBackend=openssl fetch --prune upstream --tags
 - Keep the backup branch until the updated Windows version is confirmed working.
 
 If the update fails, return to `windows-support` or the versioned backup branch.
+
+## Automated results for v0.1.100
+
+- `go build ./...`: Passed on Windows/AMD64.
+- `go vet ./...`: Passed.
+- `go mod verify`: Passed.
+- `labctl version` and `labctl --help`: Passed.
+- `go test ./...`: All reported packages passed except one upstream content
+  test that creates a symbolic link. Windows rejected the symlink because the
+  current session does not have the required privilege.
+- Race-enabled tests were not run because CGO is disabled.
+- `gofmt -l .` reported one pre-existing extra blank line in
+  `internal/config/config.go`.
+
+Manual testing is still required before replacing `windows-support`.
