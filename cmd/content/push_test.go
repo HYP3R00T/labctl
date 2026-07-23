@@ -328,7 +328,9 @@ func TestListContentFilesLocalSkipsVanishedFiles(t *testing.T) {
 	// A dangling symlink is listed by the directory walk but fails to open with
 	// ErrNotExist - the same failure mode as a short-lived editor tmp file that
 	// disappears between the listing and the checksum computation.
-	require.NoError(t, os.Symlink(filepath.Join(tmpDir, "gone"), filepath.Join(tmpDir, "vanished.md.tmp.47383")))
+	if err := os.Symlink(filepath.Join(tmpDir, "gone"), filepath.Join(tmpDir, "vanished.md.tmp.47383")); err != nil {
+		t.Skipf("symlink creation is not available in this environment: %v", err)
+	}
 
 	result, err := listContentFilesLocal(tmpDir)
 	require.NoError(t, err)

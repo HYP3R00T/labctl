@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/iximiuz/labctl/content"
@@ -89,7 +90,8 @@ func (c *Client) DownloadContentFile(
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	return c.DownloadTo(ctx, filepath.Join("/content", "files", kind.Plural(), name, file), nil, nil, dest)
+	remotePath := path.Join("/content", "files", kind.Plural(), name, file)
+	return c.DownloadTo(ctx, remotePath, nil, nil, dest)
 }
 
 func (c *Client) UploadContentFile(

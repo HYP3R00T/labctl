@@ -56,3 +56,23 @@ If the update fails, return to `windows-support` or the versioned backup branch.
   `internal/config/config.go`.
 
 Manual testing is still required before replacing `windows-support`.
+
+## Windows content download fix
+
+Content download URLs now use `path.Join`, which keeps forward slashes on every
+operating system. Local destination paths continue to use `path/filepath`.
+The audit found no other HTTP endpoint built with `filepath.Join`.
+
+`content create` now distinguishes remote creation failures, local directory
+preparation failures, and initial download failures. If a download fails after
+remote creation, the error reports the created content name and URL and prints
+a `labctl content pull` recovery command. It does not delete the remote content.
+
+Automated Windows verification:
+
+- Nested `__static__/WARNING.txt` downloads passed for both content creation and
+  content pull using a local test server.
+- The full Go test suite and `go vet ./...` passed.
+- `labctl.exe` was rebuilt and its version and content-pull help commands ran
+  successfully.
+- Manual Windows testing of the rebuilt executable passed.

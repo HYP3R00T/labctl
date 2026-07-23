@@ -109,7 +109,7 @@ func runCreateContent(ctx context.Context, cli labcli.CLI, opts *createOptions) 
 	}
 
 	if err != nil {
-		return err
+		return fmt.Errorf("remote %s creation failed: %w", opts.kind, err)
 	}
 
 	cli.PrintAux("Created a new %s %s\n", cont.GetKind(), cont.GetPageURL())
@@ -119,25 +119,37 @@ func runCreateContent(ctx context.Context, cli labcli.CLI, opts *createOptions) 
 
 	dir, err := opts.ContentDir(cont.GetName())
 	if err != nil {
-		return err
+		return postCreateError(cont, "", "local directory preparation failed", err)
 	}
 
 	if _, err := os.Stat(dir); err == nil {
 		cli.PrintErr("WARNING: Directory %s already exists and not empty.\n", dir)
 		cli.PrintErr("Skipping pulling sample content to avoid overwriting existing local files.\n")
-		cli.PrintErr("Use `labctl pull %s %s --dir <some-other-dir>`\nto pull the sample content files manually.\n", cont.GetKind(), cont.GetName())
+		cli.PrintErr("Use `labctl content pull %s %s --dir <some-other-dir>`\nto pull the sample content files manually.\n", cont.GetKind(), cont.GetName())
 		cli.PrintOut("%s\n", cont.GetName())
 		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return postCreateError(cont, dir, "local directory preparation failed", err)
 	}
 
 	cli.PrintAux("Preparing the working directory %s...\n", dir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("couldn't create directory %s: %w", dir, err)
+		return postCreateError(
+			cont,
+			dir,
+			"local directory preparation failed",
+			fmt.Errorf("couldn't create directory %s: %w", dir, err),
+		)
 	}
 
 	files, err := cli.Client().ListContentFiles(ctx, cont.GetKind(), cont.GetName())
 	if err != nil {
-		return fmt.Errorf("couldn't list content files: %w", err)
+		return postCreateError(
+			cont,
+			dir,
+			"initial content download failed",
+			fmt.Errorf("couldn't list content files: %w", err),
+		)
 	}
 
 	cli.PrintAux("Pulling the sample content files...\n")
@@ -151,13 +163,50 @@ func runCreateContent(ctx context.Context, cli labcli.CLI, opts *createOptions) 
 			file,
 			filepath.Join(dir, file),
 		); err != nil {
-			return fmt.Errorf("couldn't download content file %s: %w", file, err)
+			return postCreateError(
+				cont,
+				dir,
+				"initial content download failed",
+				fmt.Errorf("couldn't download content file %s: %w", file, err),
+			)
 		}
 	}
 
 	cli.PrintAux("Happy authoring!\n")
 	cli.PrintOut("%s\n", cont.GetName())
 	return nil
+}
+
+func postCreateError(
+	cont content.Content,
+	dir string,
+	stage string,
+	err error,
+) error {
+	recovery := fmt.Sprintf(
+		"labctl content pull %s %s",
+		cont.GetKind(),
+		cont.GetName(),
+	)
+	if dir != "" {
+		recovery += fmt.Sprintf(` --dir "%s"`, dir)
+	}
+
+	return fmt.Errorf(
+		"%s after successful remote creation: %w\n\n"+
+			"Remote %s created successfully:\n"+
+			"  Name: %s\n"+
+			"  URL: %s\n\n"+
+			"The remote content was not deleted.\n"+
+			"Retry the initial download with:\n"+
+			"  %s",
+		stage,
+		err,
+		cont.GetKind(),
+		cont.GetName(),
+		cont.GetPageURL(),
+		recovery,
+	)
 }
 
 func createChallenge(ctx context.Context, cli labcli.CLI, opts *createOptions) (content.Content, error) {
